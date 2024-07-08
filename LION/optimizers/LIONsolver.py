@@ -35,15 +35,7 @@ import pathlib
 
 
 class LIONsolver(ABC):
-    def __init__(
-        self,
-        model,
-        optimizer,
-        loss_fn,
-        optimizer_params,
-        verbose,
-        model_regularization=None,
-    ) -> None:
+    def __init__(self, model, optimizer, loss_fn, optimizer_params, verbose) -> None:
         super().__init__()
         __metaclass__ = ABCMeta  # make class abstract.
 
@@ -51,7 +43,7 @@ class LIONsolver(ABC):
         assert isinstance(
             optimizer, torch.optim.Optimizer
         ), "optimizer must be a torch optimizer"
-        assert callable(loss_fn), "loss_fn must be a function"
+        assert callable(loss_fn), "loss_fn must be a torch loss function"
 
         if optimizer_params is None:
             optimizer_params = self.default_parameters()
@@ -69,7 +61,7 @@ class LIONsolver(ABC):
         self.checkpoint_fname = optimizer_params.checkpoint_fname
         self.validation_fname = optimizer_params.validation_fname
         self.verbose = verbose
-        self.model_regularization = model_regularization
+
         self.metadata = LIONParameter()
         self.dataset_param = LIONParameter()
 
@@ -117,13 +109,10 @@ class LIONsolver(ABC):
         """
         This function sets the checkpointing
         """
-        if not save_folder.is_dir():
-            raise ValueError(f"Save folder {save_folder} is not a directory")
-
         self.checkpoint_freq = checkpoint_freq
         self.save_folder = save_folder
         self.checkpoint_fname = checkpoint_fname
-        self.do_load_checkpoint = load_checkpoint
+        self.load_checkpoint = load_checkpoint
 
     def check_complete(self, error=True, autofill=True):
         """
@@ -169,7 +158,7 @@ class LIONsolver(ABC):
         # Test 4: is the loss_fn set? if not, raise error or warn
         return_code = self.__check_attribute(
             "loss_fn",
-            expected_type=callable,
+            expected_type=nn.Module,
             error=error,
             autofill=False,
             verbose=verbose,
@@ -243,14 +232,14 @@ class LIONsolver(ABC):
             autofill=False,
             verbose=True,
         )
-        # Test 13: is the checkpoint filename filename set? if not, raise error or warn or autofill
+        # Test 13: is the checkpoint frequency filename set? if not, raise error or warn or autofill
 
         if self.final_result_fname is not None:
             default_checkpoint_fname = self.final_result_fname.parent / pathlib.Path(
                 str(self.final_result_fname.stem) + "_checkpoint_*.pt"
             )
         else:
-            default_checkpoint_fname = None
+            default_checkpoint_fname = ""
         return_code = self.__check_attribute(
             "checkpoint_fname",
             expected_type=pathlib.Path,
@@ -259,22 +248,7 @@ class LIONsolver(ABC):
             verbose=False,
             default=default_checkpoint_fname,
         )
-        # Test 14: is the validation filename set? if not, raise error or warn or autofill
-        if self.final_result_fname is not None:
-            default_validation_fname = self.final_result_fname.parent / pathlib.Path(
-                str(self.final_result_fname.stem) + "_min_val.pt"
-            )
-        else:
-            default_validation_fname = None
-        return_code = self.__check_attribute(
-            "validation_fname",
-            expected_type=pathlib.Path,
-            error=False,
-            autofill=True,
-            verbose=False,
-            default=default_validation_fname,
-        )
-        # Test 15: is the checkpoint frequency set? if not, raise error or warn or autofill
+        # Test 14: is the checkpoint frequency set? if not, raise error or warn or autofill
         return_code = self.__check_attribute(
             "checkpoint_freq",
             expected_type=int,
@@ -284,7 +258,7 @@ class LIONsolver(ABC):
             default=10,
         )
 
-        # Test 16: is the load checkpoint set? if not, raise error or warn or autofill
+        # Test 15: is the load checkpoint set? if not, raise error or warn or autofill
         return_code = self.__check_attribute(
             "load_checkpoint",
             expected_type=bool,
@@ -293,15 +267,6 @@ class LIONsolver(ABC):
             verbose=verbose,
             default=True,
         )
-        # Test 17: is the model regularization set?
-        return_code = self.__check_attribute(
-            "model_regularization",
-            expected_type=nn.Module,
-            error=False,
-            autofill=False,
-            verbose=False,
-        )
-
         self.verbose = verbose
 
         return return_code
@@ -361,7 +326,7 @@ class LIONsolver(ABC):
                 pathlib.Path(str(self.checkpoint_fname).replace("*", f"{epoch+1:04d}"))
             ),
             epoch + 1,
-            self.train_loss,
+            self.loss,
             self.optimizer,
             self.metadata,
             dataset=self.dataset_param,
@@ -372,10 +337,12 @@ class LIONsolver(ABC):
         This function saves the validation results
         """
         self.model.save(
-            self.save_folder.joinpath(self.validation_fname),
+            self.save_folder.joinpath(
+                pathlib.Path(str(self.validation_fname).replace("*", f"{epoch+1:04d}"))
+            ),
             epoch=epoch,
             training=self.metadata,
-            loss=self.validation_loss[epoch],
+            loss=self.validation_loss,
             dataset=self.dataset_param,
         )
 
@@ -387,7 +354,6 @@ class LIONsolver(ABC):
             epoch = self.epochs
         if final_result_fname is not None:
             self.final_result_fname = final_result_fname
-
         self.model.save(
             self.final_result_fname,
             epoch=epoch,
@@ -419,32 +385,6 @@ class LIONsolver(ABC):
                 f"Testing loss: {test_loss.mean()} - Testing loss std: {test_loss.std()}"
             )
         return test_loss
-
-    def load_checkpoint(self):
-        """
-        This function loads a checkpoint (if exists)
-        """
-        (
-            self.model,
-            self.optimizer,
-            epoch,
-            self.train_loss,
-            _,
-        ) = self.model.load_checkpoint_if_exists(
-            self.save_folder.joinpath(self.checkpoint_fname),
-            self.model,
-            self.optimizer,
-            self.train_loss,
-        )
-        if self.validation_fn is not None and epoch > 0:
-            self.validation_loss[epoch - 1] = self.model._read_min_validation(
-                self.save_folder.joinpath(self.validation_fname)
-            )
-            if self.verbose:
-                print(
-                    f"Loaded checkpoint at epoch {epoch}. Current min validation loss is {self.validation_loss[epoch-1]}"
-                )
-        return epoch
 
     @abstractmethod
     def mini_batch_step(self):
